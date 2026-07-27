@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+output/
+cache/
+*.pdf
+*.db
+config.yaml
+reset_status.py
+debug_batch_*.json
+CR_better_cluster.md
+.opencode/plans/
+

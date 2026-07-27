@@ -1,0 +1,11 @@
+PyMuPDF
+numpy
+opencv-python
+easyocr
+paddleocr<3.0
+paddlepaddle-gpu
+Pillow
+requests
+tqdm
+PyYAML
+google-genai

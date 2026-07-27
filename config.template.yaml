@@ -1,0 +1,30 @@
+engine: ollama
+model: qwen3:8b
+ollama_url: http://localhost:11434
+openrouter_api_key: ""
+openrouter_model: google/gemma-4-31b-it:free
+gemini_api_key: ""
+gemini_model: gemini-2.0-flash
+batch_pages: 10
+chunk_min_tokens: 800
+chunk_max_tokens: 2000
+chunk_max_items: 100
+cache_db: translation_cache.db
+ocr_engine: both
+ocr_lang: japan
+ocr_confidence: 0.1
+text_threshold: 0.7
+low_text: 0.4
+min_size: 10
+canvas_size: 4096
+output_suffix: _translated
+no_ocr: false
+use_gpu: true
+extract_dpi: 600
+stage: full
+cluster_algorithm: layout
+line_spacing_ratio: 1.5
+column_gap: 50.0
+threads:
+  ocr: 2
+  translator: 1
