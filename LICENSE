@@ -1,0 +1,31 @@
+SUSTAINABLE USE LICENSE V1.0
+
+1. DEFINITIONS
+
+"Licensor" means the entity or individual making the Software available under this License.
+"Software" means the software program, documentation, and source code made available by the Licensor under this License.
+"Commercial Output" means using the Software to provide services to third parties for a fee or as part of a paid commercial product, SaaS, or PaaS offering.
+
+2. GRANT OF RIGHTS
+
+Subject to the terms and conditions of this License, Licensor hereby grants you a non-exclusive, worldwide, royalty-free, non-transferable license to:
+(a) reproduce, modify, and create derivative works of the Software; and
+(b) run, execute, and use the Software internally for personal, educational, or internal business operations.
+
+3. RESTRICTIONS
+
+You may NOT:
+(a) make the Software, or any substantial part of it, available to third parties as a hosted service, managed service, Software-as-a-Service (SaaS), Platform-as-a-Service (PaaS), or any other paid cloud-based or commercial offering;
+(b) remove, alter, or obscure any copyright, trademark, or other proprietary notices contained in the Software.
+
+4. COMMERCIAL PERMISSION
+
+If you wish to use the Software for Commercial Output, or beyond the scope permitted in Section 2, you must obtain a separate commercial license from the Licensor.
+
+5. TERMINATION
+
+This License and the rights granted hereunder will terminate automatically if you fail to comply with any of its terms and conditions.
+
+6. DISCLAIMER OF WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
