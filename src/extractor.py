@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
+import warnings
 
 import fitz  # PyMuPDF
 from .models import PageResult, TextBlock
@@ -95,19 +96,53 @@ def extract_page(page: fitz.Page, page_num: int, dpi: int = 300) -> PageResult:
         result.image = get_page_image(page, dpi=dpi)
 
     # Extract image bounding boxes (in PDF point space) for image-region filtering.
-    # Only keep images with meaningful size (> 50x50 points) to avoid tiny icons/decorations.
+    # Use a couple of PyMuPDF paths because some PDFs expose image placement
+    # through xrefs while others only expose usable rectangles via get_image_rects().
     try:
+        seen: set[tuple[float, float, float, float]] = set()
+
+        def _add_bbox(bbox: tuple[float, float, float, float]) -> None:
+            x0, y0, x1, y1 = bbox
+            if x1 <= x0 or y1 <= y0:
+                return
+            w = x1 - x0
+            h = y1 - y0
+            # Keep only meaningful image regions. Tiny inline icons are not
+            # useful for text-in-image filtering and tend to create noise.
+            if w < 24 or h < 24:
+                return
+            key = (round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1))
+            if key not in seen:
+                seen.add(key)
+                result.image_bboxes.append((x0, y0, x1, y1))
+
         image_infos = page.get_image_info(xrefs=True)
         for info in image_infos:
             bbox = info.get("bbox")
             if bbox:
-                x0, y0, x1, y1 = bbox
-                w = x1 - x0
-                h = y1 - y0
-                if w > 50 and h > 50:
-                    result.image_bboxes.append((x0, y0, x1, y1))
-    except Exception:
-        pass  # Graceful degradation if image info extraction fails
+                _add_bbox(tuple(bbox))
+            xref = info.get("xref")
+            if xref:
+                try:
+                    for rect in page.get_image_rects(xref):
+                        _add_bbox((rect.x0, rect.y0, rect.x1, rect.y1))
+                except Exception:
+                    continue
+
+        # Fallback for PDFs where get_image_info() does not report placement.
+        if not result.image_bboxes:
+            for img in page.get_images(full=True):
+                xref = img[0]
+                try:
+                    for rect in page.get_image_rects(xref):
+                        _add_bbox((rect.x0, rect.y0, rect.x1, rect.y1))
+                except Exception:
+                    continue
+
+        if result.image_bboxes:
+            warnings.warn(f"Page {page_num}: extracted {len(result.image_bboxes)} image bbox(es)")
+    except Exception as exc:
+        warnings.warn(f"Page {page_num}: image bbox extraction failed: {exc}")
 
     return result
 

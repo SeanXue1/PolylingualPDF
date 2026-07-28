@@ -11,14 +11,29 @@ from __future__ import annotations
 from .models import TextBlock
 
 
+def _expand_bbox(
+    bbox: tuple[float, float, float, float],
+    pad: float,
+) -> tuple[float, float, float, float]:
+    x0, y0, x1, y1 = bbox
+    return (x0 - pad, y0 - pad, x1 + pad, y1 + pad)
+
+
 def _scale_image_bbox_to_ocr_space(
     image_bbox: tuple[float, float, float, float],
     source_dpi: int,
+    page_height: float,
 ) -> tuple[float, float, float, float]:
-    """Convert a bbox from PDF point space (72 DPI) to OCR pixel space."""
+    """Convert a bbox from PDF point space (72 DPI) to OCR pixel space.
+
+    PyMuPDF page coordinates use a bottom-left origin, while OCR outputs are in
+    raster image coordinates with a top-left origin. We therefore scale and flip
+    Y using the page height.
+    """
     scale = source_dpi / 72.0
     x0, y0, x1, y1 = image_bbox
-    return (x0 * scale, y0 * scale, x1 * scale, y1 * scale)
+    img_h = page_height * scale
+    return (x0 * scale, img_h - (y1 * scale), x1 * scale, img_h - (y0 * scale))
 
 
 def _overlap_ratio(
@@ -94,6 +109,7 @@ def filter_image_text(
         return text_blocks
 
     page_area = page_width * page_height if page_width > 0 and page_height > 0 else 0.0
+    pad = max(4.0, source_dpi * 0.01)
 
     # Scale non-background image bboxes to OCR pixel space
     scaled_image_bboxes = []
@@ -102,15 +118,20 @@ def filter_image_text(
             ib_w = ib[2] - ib[0]
             ib_h = ib[3] - ib[1]
             ib_area = ib_w * ib_h
-            if ib_area / page_area > 0.80:
+            if ib_area / page_area > 0.85:
                 continue # Skip background/full-page images
-        scaled_image_bboxes.append(_scale_image_bbox_to_ocr_space(ib, source_dpi))
+        scaled = _scale_image_bbox_to_ocr_space(ib, source_dpi, page_height)
+        scaled_image_bboxes.append(_expand_bbox(scaled, pad))
 
     filtered: list[TextBlock] = []
     for block in text_blocks:
         in_image = False
         for img_bbox in scaled_image_bboxes:
-            if _center_inside(block.bbox, img_bbox) and _overlap_ratio(block.bbox, img_bbox) >= overlap_threshold:
+            overlap = _overlap_ratio(block.bbox, img_bbox)
+            if overlap >= overlap_threshold:
+                in_image = True
+                break
+            if _center_inside(block.bbox, img_bbox) and overlap >= 0.25:
                 in_image = True
                 break
         if not in_image:

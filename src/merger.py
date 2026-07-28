@@ -23,20 +23,19 @@ def _x_center(bbox: tuple[float, float, float, float]) -> float:
 def _column_cluster(blocks: list[TextBlock], x_gap_threshold: float = 50.0) -> list[list[TextBlock]]:
     if not blocks:
         return []
-    sorted_blocks = sorted(blocks, key=lambda b: _x_center(b.bbox))
+    # Keep blocks in approximate left-to-right column order, but split when the
+    # horizontal gap is large enough that the items are unlikely to belong to
+    # the same column. This avoids merging separate columns that happen to sit
+    # on the same horizontal band.
+    sorted_blocks = sorted(blocks, key=lambda b: (b.bbox[0], b.bbox[1]))
     clusters: list[list[TextBlock]] = [[sorted_blocks[0]]]
 
     for block in sorted_blocks[1:]:
-        prev_center = _x_center(clusters[-1][-1].bbox)
-        curr_center = _x_center(block.bbox)
-        if curr_center - prev_center > x_gap_threshold:
-            prev_b = clusters[-1][-1].bbox
-            curr_b = block.bbox
-            same_line = curr_b[1] < prev_b[3] and curr_b[3] > prev_b[1]
-            if not same_line:
-                clusters.append([block])
-            else:
-                clusters[-1].append(block)
+        prev_b = clusters[-1][-1].bbox
+        curr_b = block.bbox
+        x_gap = curr_b[0] - prev_b[2]
+        if x_gap > x_gap_threshold:
+            clusters.append([block])
         else:
             clusters[-1].append(block)
 

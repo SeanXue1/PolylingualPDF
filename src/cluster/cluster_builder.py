@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..models import Paragraph, TextBlock
-from .geometry import bbox_height, bbox_union, bbox_area, iou, intersection
+from .geometry import bbox_height, bbox_union, bbox_area, iou, intersection, horizontal_overlap, vertical_overlap
 from .reading_order import sort_boxes_in_reading_order
 from .xycut import xycut_segment
 from .line_detector import detect_lines
@@ -28,8 +28,8 @@ def _containment_ratio(
 
 def _merge_overlapping_paragraphs(
     all_para_data: list[dict],
-    iou_threshold: float = 0.15,
-    containment_threshold: float = 0.70,
+    iou_threshold: float = 0.12,
+    containment_threshold: float = 0.60,
 ) -> list[dict]:
     """Merge paragraph entries whose bounding boxes significantly overlap.
 
@@ -37,35 +37,118 @@ def _merge_overlapping_paragraphs(
     - Their IoU exceeds *iou_threshold*, OR
     - One box is largely contained within the other (containment ratio > *containment_threshold*).
 
-    Merging combines their boxes, lines, and text and recomputes the union bbox.
-    The process repeats until no more merges are possible.
+    Merging also catches line-split fragments that have the same column footprint
+    and only a small vertical gap between them.
     """
-    merged = list(all_para_data)
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(merged)):
-            for j in range(i + 1, len(merged)):
-                a_bbox = merged[i]["bbox"]
-                b_bbox = merged[j]["bbox"]
-                if iou(a_bbox, b_bbox) > iou_threshold or _containment_ratio(a_bbox, b_bbox) > containment_threshold:
-                    # Merge j into i
-                    combined_boxes = merged[i]["boxes"] + merged[j]["boxes"]
-                    combined_lines = merged[i]["lines"] + merged[j]["lines"]
-                    # Sort lines by vertical position for correct reading order
-                    combined_lines.sort(key=lambda t: (t[0][1], t[0][0]))
-                    all_line_bboxes = [b for b, _, _ in combined_lines]
-                    merged[i] = {
-                        "bbox": bbox_union(all_line_bboxes),
-                        "boxes": combined_boxes,
-                        "text": "".join(tb.text for tb in combined_boxes),
-                        "lines": combined_lines,
-                    }
-                    merged.pop(j)
-                    changed = True
-                    break
-            if changed:
-                break
+    if len(all_para_data) <= 1:
+        return all_para_data
+
+    def _ordered_lines(lines: list[tuple[tuple[float, float, float, float], str, float]]):
+        return sorted(lines, key=lambda t: (t[0][1], t[0][0]))
+
+    def _median(values: list[float], default: float = 12.0) -> float:
+        vals = sorted(v for v in values if v > 0)
+        if not vals:
+            return default
+        return vals[len(vals) // 2]
+
+    def _vertical_separation(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        if a[3] <= b[1]:
+            return b[1] - a[3]
+        if b[3] <= a[1]:
+            return a[1] - b[3]
+        return 0.0
+
+    def _horizontal_separation(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        if a[2] <= b[0]:
+            return b[0] - a[2]
+        if b[2] <= a[0]:
+            return a[0] - b[2]
+        return 0.0
+
+    def _merge_entry_group(group: list[dict]) -> dict:
+        combined_boxes: list[TextBlock] = []
+        combined_lines: list[tuple[tuple[float, float, float, float], str, float]] = []
+        for entry in group:
+            combined_boxes.extend(entry["boxes"])
+            combined_lines.extend(entry["lines"])
+        combined_boxes.sort(key=lambda tb: (tb.bbox[1], tb.bbox[0]))
+        combined_lines = _ordered_lines(combined_lines)
+        line_bboxes = [b for b, _, _ in combined_lines]
+        if line_bboxes:
+            merged_bbox = bbox_union(line_bboxes)
+        else:
+            merged_bbox = bbox_union([tb.bbox for tb in combined_boxes])
+        return {
+            "bbox": merged_bbox,
+            "boxes": combined_boxes,
+            "text": "".join(tb.text for tb in combined_boxes),
+            "lines": combined_lines,
+        }
+
+    med_line_h = _median([bbox_height(b) for p in all_para_data for b, _, _ in p["lines"]], default=12.0)
+    vertical_gap_limit = max(8.0, med_line_h * 0.95)
+    horizontal_gap_limit = max(8.0, med_line_h * 0.75)
+
+    def _should_merge(a: dict, b: dict) -> bool:
+        a_bbox = a["bbox"]
+        b_bbox = b["bbox"]
+        if iou(a_bbox, b_bbox) > iou_threshold or _containment_ratio(a_bbox, b_bbox) > containment_threshold:
+            return True
+
+        a_w = max(1.0, a_bbox[2] - a_bbox[0])
+        b_w = max(1.0, b_bbox[2] - b_bbox[0])
+        a_h = max(1.0, a_bbox[3] - a_bbox[1])
+        b_h = max(1.0, b_bbox[3] - b_bbox[1])
+
+        x_overlap = horizontal_overlap(a_bbox, b_bbox)
+        y_overlap = vertical_overlap(a_bbox, b_bbox)
+        x_overlap_ratio = x_overlap / min(a_w, b_w)
+        y_overlap_ratio = y_overlap / min(a_h, b_h)
+
+        v_gap = _vertical_separation(a_bbox, b_bbox)
+        h_gap = _horizontal_separation(a_bbox, b_bbox)
+
+        # Same-column fragments: strong x overlap and only a small vertical gap.
+        if x_overlap_ratio >= 0.55 and v_gap <= vertical_gap_limit:
+            return True
+
+        # Less common horizontal fragments: strong y overlap and only a small horizontal gap.
+        if y_overlap_ratio >= 0.55 and h_gap <= horizontal_gap_limit:
+            return True
+
+        # Very thin cross-overlaps caused by XY-cut / OCR noise.
+        if x_overlap_ratio >= 0.35 and y_overlap_ratio >= 0.35 and min(a_w, b_w, a_h, b_h) > 0:
+            return True
+
+        return False
+
+    parent = list(range(len(all_para_data)))
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri = _find(i)
+        rj = _find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i in range(len(all_para_data)):
+        for j in range(i + 1, len(all_para_data)):
+            if _should_merge(all_para_data[i], all_para_data[j]):
+                _union(i, j)
+
+    groups: dict[int, list[dict]] = {}
+    for idx, entry in enumerate(all_para_data):
+        root = _find(idx)
+        groups.setdefault(root, []).append(entry)
+
+    merged = [_merge_entry_group(group) for group in groups.values()]
+    merged.sort(key=lambda p: (p["bbox"][1], p["bbox"][0]))
     return merged
 
 
