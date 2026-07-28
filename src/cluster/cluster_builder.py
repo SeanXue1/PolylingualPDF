@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..models import Paragraph, TextBlock
-from .geometry import bbox_height, bbox_union
+from .geometry import bbox_height, bbox_union, bbox_area, iou, intersection
 from .reading_order import sort_boxes_in_reading_order
 from .xycut import xycut_segment
 from .line_detector import detect_lines
@@ -11,6 +11,62 @@ from .layout_classifier import classify_paragraphs
 
 def _estimate_font_size(bbox: tuple[float, float, float, float]) -> float:
     return bbox_height(bbox)
+
+
+def _containment_ratio(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    """Return the fraction of the smaller box's area that overlaps with the larger."""
+    inter = intersection(a, b)
+    if inter is None:
+        return 0.0
+    inter_area = bbox_area(inter)
+    smaller_area = min(bbox_area(a), bbox_area(b))
+    return inter_area / smaller_area if smaller_area > 0 else 0.0
+
+
+def _merge_overlapping_paragraphs(
+    all_para_data: list[dict],
+    iou_threshold: float = 0.15,
+    containment_threshold: float = 0.70,
+) -> list[dict]:
+    """Merge paragraph entries whose bounding boxes significantly overlap.
+
+    Two paragraphs are merged when:
+    - Their IoU exceeds *iou_threshold*, OR
+    - One box is largely contained within the other (containment ratio > *containment_threshold*).
+
+    Merging combines their boxes, lines, and text and recomputes the union bbox.
+    The process repeats until no more merges are possible.
+    """
+    merged = list(all_para_data)
+    changed = True
+    while changed:
+        changed = False
+        for i in range(len(merged)):
+            for j in range(i + 1, len(merged)):
+                a_bbox = merged[i]["bbox"]
+                b_bbox = merged[j]["bbox"]
+                if iou(a_bbox, b_bbox) > iou_threshold or _containment_ratio(a_bbox, b_bbox) > containment_threshold:
+                    # Merge j into i
+                    combined_boxes = merged[i]["boxes"] + merged[j]["boxes"]
+                    combined_lines = merged[i]["lines"] + merged[j]["lines"]
+                    # Sort lines by vertical position for correct reading order
+                    combined_lines.sort(key=lambda t: (t[0][1], t[0][0]))
+                    all_line_bboxes = [b for b, _, _ in combined_lines]
+                    merged[i] = {
+                        "bbox": bbox_union(all_line_bboxes),
+                        "boxes": combined_boxes,
+                        "text": "".join(tb.text for tb in combined_boxes),
+                        "lines": combined_lines,
+                    }
+                    merged.pop(j)
+                    changed = True
+                    break
+            if changed:
+                break
+    return merged
 
 
 def run_cluster_pipeline(
@@ -82,6 +138,9 @@ def run_cluster_pipeline(
 
     if not all_para_data:
         return []
+
+    # 5.5. Merge paragraphs with overlapping bounding boxes
+    all_para_data = _merge_overlapping_paragraphs(all_para_data)
 
     # 6. Layout Classification
     para_bboxes = [p["bbox"] for p in all_para_data]

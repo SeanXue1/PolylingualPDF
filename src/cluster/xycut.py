@@ -121,7 +121,7 @@ def xycut_segment(
     med_h = median_height(bboxes, default=12.0)
     # Adaptive gap sizes based on text size
     min_v_gap = max(4, int(med_h * 0.35))
-    min_h_gap = max(5, int(med_h * 0.5))
+    min_h_gap = max(8, int(med_h * 0.8))
 
     min_x = min(b[0] for b in bboxes)
     max_x = max(b[2] for b in bboxes)

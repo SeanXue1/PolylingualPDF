@@ -47,7 +47,7 @@ def detect_paragraphs(
     med_line_gap = (sum(inter_line_gaps) / len(inter_line_gaps)) if inter_line_gaps else (med_line_h * 0.25)
 
     # Threshold for paragraph break: gap significantly larger than normal inter-line gap
-    max_paragraph_gap = max(med_line_h * 0.55, med_line_gap * 1.6, 6.0)
+    max_paragraph_gap = max(med_line_h * 0.8, med_line_gap * 2.0, 8.0)
 
     paragraphs: list[list[int]] = [[0]]
 
@@ -70,7 +70,7 @@ def detect_paragraphs(
         # 2. Font height discrepancy (> 25% difference, e.g. heading vs body) -> split
         if prev_h > 0 and curr_h > 0:
             ratio = max(prev_h, curr_h) / min(prev_h, curr_h)
-            if ratio > 1.25:
+            if ratio > 1.40:
                 paragraphs.append([i])
                 continue
 
@@ -78,7 +78,7 @@ def detect_paragraphs(
         # (Only if block is multi-character wide > 3 * line_h)
         if block_width > med_line_h * 3.0:
             prev_right = line_rights[i - 1]
-            if block_right - prev_right > med_line_h * 1.5 and gap > 0:
+            if block_right - prev_right > med_line_h * 2.5 and gap > 0:
                 paragraphs.append([i])
                 continue
 
@@ -86,7 +86,7 @@ def detect_paragraphs(
         if block_width > med_line_h * 3.0:
             curr_left = line_lefts[i]
             prev_left = line_lefts[i - 1]
-            if curr_left - block_left > med_line_h * 0.8 and abs(prev_left - block_left) < med_line_h * 0.5:
+            if curr_left - block_left > med_line_h * 1.2 and abs(prev_left - block_left) < med_line_h * 0.5:
                 paragraphs.append([i])
                 continue
 

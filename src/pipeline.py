@@ -18,6 +18,7 @@ from .extractor import extract_pdf
 from .merger import build_page_paragraphs, cluster_paragraphs
 from .models import PageResult
 from .ocr import ocr_page
+from .image_filter import filter_image_text
 from .renderer import _find_cjk_font, _get_cjk_font, _optimal_font_size, _pdf_point, render_pdf, render_single_page_to_doc
 from .translator import _is_identity_failure
 from .translator import create_translator
@@ -194,6 +195,16 @@ def run_extraction_pipeline(
                     canvas_size=config.canvas_size,
                 )
                 if ocr_blocks:
+                    # Filter out text blocks detected inside image regions
+                    if result.image_bboxes:
+                        before_count = len(ocr_blocks)
+                        ocr_blocks = filter_image_text(
+                            ocr_blocks, result.image_bboxes, result.source_dpi,
+                            page_width=result.width, page_height=result.height
+                        )
+                        filtered_count = before_count - len(ocr_blocks)
+                        if filtered_count > 0 and progress:
+                            tqdm.write(f"  [FILTER] Page {pn}: removed {filtered_count} text blocks inside images")
                     result.blocks = ocr_blocks
             except Exception as e:
                 tqdm.write(f"  [WARN] OCR failed on page {pn}: {e}")

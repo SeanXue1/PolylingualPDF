@@ -83,3 +83,4 @@ class PageResult:
     needs_ocr: bool = False
     image: Optional[bytes] = None
     source_dpi: int = 72
+    image_bboxes: list[tuple[float, float, float, float]] = field(default_factory=list)

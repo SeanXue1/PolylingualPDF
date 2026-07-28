@@ -94,6 +94,21 @@ def extract_page(page: fitz.Page, page_num: int, dpi: int = 300) -> PageResult:
     if result.needs_ocr:
         result.image = get_page_image(page, dpi=dpi)
 
+    # Extract image bounding boxes (in PDF point space) for image-region filtering.
+    # Only keep images with meaningful size (> 50x50 points) to avoid tiny icons/decorations.
+    try:
+        image_infos = page.get_image_info(xrefs=True)
+        for info in image_infos:
+            bbox = info.get("bbox")
+            if bbox:
+                x0, y0, x1, y1 = bbox
+                w = x1 - x0
+                h = y1 - y0
+                if w > 50 and h > 50:
+                    result.image_bboxes.append((x0, y0, x1, y1))
+    except Exception:
+        pass  # Graceful degradation if image info extraction fails
+
     return result
 
 
