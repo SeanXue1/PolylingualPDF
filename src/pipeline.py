@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import warnings
 
@@ -23,7 +22,7 @@ from .renderer import _find_cjk_font, _get_cjk_font, _optimal_font_size, _pdf_po
 from .translator import _is_identity_failure
 from .translator import create_translator
 
-LINE_SEP = " ||| "
+
 
 
 def _get_cluster_algorithm(config: Config) -> BaseClusterAlgorithm:
@@ -94,22 +93,6 @@ def _split_translation(para, dpi: int | None = None) -> None:
     if n <= 1:
         para.translated_lines = [txt]
         return
-
-    # Try LINE_SEP and variants — model sometimes changes ||| to | or | |
-    found_sep = False
-    for sep in (LINE_SEP, ' | | ', ' | '):
-        if sep in txt:
-            found_sep = True
-            parts = [p.strip() for p in txt.split(sep)]
-            if len(parts) >= n:
-                para.translated_lines = parts[:n]
-                return
-            break  # found marker but too few segments — fall through
-
-    if found_sep:
-        # Clean up remaining pipe markers so they don't render in the PDF
-        txt = re.sub(r'\s*\|\s*\|\s*(\|\s*)?', '', txt)
-        txt = re.sub(r'\s*\|\s*', '', txt)
 
     # Width-aware splitting using box dimensions
     if dpi and para.line_bboxes and _find_cjk_font():
