@@ -1,10 +1,33 @@
 from __future__ import annotations
 
-from .geometry import median_height
+import re
+
+
+def _is_paragraph_start_text(text: str) -> bool:
+    if not text:
+        return False
+
+    s = text.lstrip()
+    if not s:
+        return False
+
+    if text.startswith("\u3000") or text.startswith("  "):
+        return True
+
+    # Common paragraph-start markers:
+    # - ASCII numbering: 1. / 1) / (1)
+    # - CJK circled numbers and dingbat bullets
+    # - simple bullet characters
+    if re.match(r"^(?:\(\d{1,2}\)|\d{1,2}[.)]|[\u2460-\u2473\u2776-\u277f])(?:\s|$)", s):
+        return True
+    if s[0] in {"•", "◦", "▪", "●", "○", "・", "·", "-", "–"}:
+        return True
+    return False
 
 
 def detect_paragraphs(
     line_groups: list[list[tuple[float, float, float, float]]],
+    line_texts: list[str] | None = None,
     line_spacing_ratio: float = 1.5,
     min_line_height: float = 4.0,
 ) -> list[list[int]]:
@@ -14,10 +37,10 @@ def detect_paragraphs(
         return [[0]]
 
     # Calculate line bounding boxes and metrics
-    line_bboxes = []
-    line_heights = []
-    line_lefts = []
-    line_rights = []
+    line_bboxes: list[tuple[float, float, float, float]] = []
+    line_heights: list[float] = []
+    line_lefts: list[float] = []
+    line_rights: list[float] = []
 
     for line in line_groups:
         x0 = min(b[0] for b in line)
@@ -35,7 +58,7 @@ def detect_paragraphs(
     block_width = block_right - block_left
 
     # Estimate median line height and inter-line gaps
-    inter_line_gaps = []
+    inter_line_gaps: list[float] = []
     for i in range(1, len(line_groups)):
         prev_bottom = line_bboxes[i - 1][3]
         curr_top = line_bboxes[i][1]
@@ -46,8 +69,8 @@ def detect_paragraphs(
     med_line_h = sum(line_heights) / len(line_heights) if line_heights else 12.0
     med_line_gap = (sum(inter_line_gaps) / len(inter_line_gaps)) if inter_line_gaps else (med_line_h * 0.25)
 
-    # Threshold for paragraph break: gap significantly larger than normal inter-line gap
-    max_paragraph_gap = max(med_line_h * 0.8, med_line_gap * 2.0, 8.0)
+    # Threshold for paragraph break: gap noticeably larger than normal inter-line gap
+    max_paragraph_gap = max(med_line_h * 0.5, med_line_gap * 1.4, 5.0)
 
     paragraphs: list[list[int]] = [[0]]
 
@@ -62,31 +85,37 @@ def detect_paragraphs(
         prev_h = line_heights[i - 1]
         curr_h = line_heights[i]
 
+        curr_text = line_texts[i] if line_texts and i < len(line_texts) else ""
+
+        # 0. Text-based paragraph start (bullet points, numbered items, full-width space indent)
+        if curr_text and _is_paragraph_start_text(curr_text):
+            paragraphs.append([i])
+            continue
+
         # 1. Large vertical gap -> split
         if gap > max_paragraph_gap:
             paragraphs.append([i])
             continue
 
-        # 2. Font height discrepancy (> 25% difference, e.g. heading vs body) -> split
+        # 2. Font height discrepancy -> split
         if prev_h > 0 and curr_h > 0:
             ratio = max(prev_h, curr_h) / min(prev_h, curr_h)
-            if ratio > 1.40:
+            if ratio > 1.25:
                 paragraphs.append([i])
                 continue
 
         # 3. Short ending line signal: prev_line ends early before right margin of block
-        # (Only if block is multi-character wide > 3 * line_h)
-        if block_width > med_line_h * 3.0:
+        if block_width > med_line_h * 2.5:
             prev_right = line_rights[i - 1]
-            if block_right - prev_right > med_line_h * 2.5 and gap > 0:
+            if block_right - prev_right > med_line_h * 1.0 and gap > 0:
                 paragraphs.append([i])
                 continue
 
         # 4. First-line indent signal: curr_line is indented from left margin
-        if block_width > med_line_h * 3.0:
+        if block_width > med_line_h * 2.5:
             curr_left = line_lefts[i]
             prev_left = line_lefts[i - 1]
-            if curr_left - block_left > med_line_h * 1.2 and abs(prev_left - block_left) < med_line_h * 0.5:
+            if curr_left - block_left > med_line_h * 0.4 and abs(prev_left - block_left) < med_line_h * 0.5:
                 paragraphs.append([i])
                 continue
 

@@ -1,4 +1,6 @@
 from src.cluster.cluster_builder import _merge_overlapping_paragraphs
+from src.cluster.layout_cluster import LayoutClusterAlgorithm
+from src.cluster.paragraph_detector import detect_paragraphs
 from src.image_filter import filter_image_text
 from src.models import TextBlock
 
@@ -45,9 +47,44 @@ def test_merge_overlapping_paragraphs_merges_fragmented_same_column_lines():
     assert len(merged[0]["lines"]) == 2
 
 
+def test_detect_paragraphs_splits_numbered_items_by_text():
+    line_groups = [
+        [(0, 0, 100, 20)],
+        [(0, 24, 100, 44)],
+        [(0, 60, 100, 80)],
+        [(0, 84, 100, 104)],
+    ]
+    line_texts = [
+        "1. First item",
+        "continuation",
+        "2. Second item",
+        "continuation",
+    ]
+
+    paras = detect_paragraphs(line_groups, line_texts=line_texts)
+
+    assert paras == [[0, 1], [2, 3]]
+
+
+def test_layout_cluster_keeps_numbered_items_separate():
+    blocks = [
+        TextBlock(bbox=(0, 0, 100, 20), text="1. First item", source="ocr", page_num=1),
+        TextBlock(bbox=(0, 24, 100, 44), text="continuation", source="ocr", page_num=1),
+        TextBlock(bbox=(0, 60, 100, 80), text="2. Second item", source="ocr", page_num=1),
+        TextBlock(bbox=(0, 84, 100, 104), text="continuation", source="ocr", page_num=1),
+    ]
+
+    algo = LayoutClusterAlgorithm(column_gap=50.0, line_spacing_ratio=1.5, min_region_size=0)
+    paras = algo.build_clusters(blocks, page_width=200, page_height=200)
+
+    assert len(paras) == 2
+    assert paras[0].text.startswith("1. First item")
+    assert paras[1].text.startswith("2. Second item")
+
+
 def test_filter_image_text_removes_blocks_inside_photo_but_keeps_caption():
     blocks = [
-        TextBlock(bbox=(450, 450, 520, 500), text="731", source="ocr", page_num=1),
+        TextBlock(bbox=(450, 2700, 520, 2750), text="731", source="ocr", page_num=1),
         TextBlock(bbox=(40, 40, 100, 70), text="Caption", source="ocr", page_num=1),
     ]
     image_bboxes = [(100, 100, 220, 220)]

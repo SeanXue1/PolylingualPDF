@@ -87,12 +87,28 @@ def _merge_overlapping_paragraphs(
         }
 
     med_line_h = _median([bbox_height(b) for p in all_para_data for b, _, _ in p["lines"]], default=12.0)
-    vertical_gap_limit = max(8.0, med_line_h * 0.95)
+    vertical_gap_limit = max(6.0, med_line_h * 0.65)
     horizontal_gap_limit = max(8.0, med_line_h * 0.75)
+
+    def _vertical_separation(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        if a[3] <= b[1]:
+            return b[1] - a[3]
+        if b[3] <= a[1]:
+            return a[1] - b[3]
+        return 0.0
+
+    def _horizontal_separation(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+        if a[2] <= b[0]:
+            return b[0] - a[2]
+        if b[2] <= a[0]:
+            return a[0] - b[2]
+        return 0.0
 
     def _should_merge(a: dict, b: dict) -> bool:
         a_bbox = a["bbox"]
         b_bbox = b["bbox"]
+
+        # 1. Direct IoU overlap or containment
         if iou(a_bbox, b_bbox) > iou_threshold or _containment_ratio(a_bbox, b_bbox) > containment_threshold:
             return True
 
@@ -109,16 +125,16 @@ def _merge_overlapping_paragraphs(
         v_gap = _vertical_separation(a_bbox, b_bbox)
         h_gap = _horizontal_separation(a_bbox, b_bbox)
 
-        # Same-column fragments: strong x overlap and only a small vertical gap.
+        # 2. Same-column fragments separated only by a small vertical gap.
         if x_overlap_ratio >= 0.55 and v_gap <= vertical_gap_limit:
             return True
 
-        # Less common horizontal fragments: strong y overlap and only a small horizontal gap.
+        # 3. Same-row fragments separated only by a small horizontal gap.
         if y_overlap_ratio >= 0.55 and h_gap <= horizontal_gap_limit:
             return True
 
-        # Very thin cross-overlaps caused by XY-cut / OCR noise.
-        if x_overlap_ratio >= 0.35 and y_overlap_ratio >= 0.35 and min(a_w, b_w, a_h, b_h) > 0:
+        # 4. Significant 2D intersection (boxes overlap both horizontally and vertically)
+        if x_overlap_ratio >= 0.20 and y_overlap_ratio >= 0.80:
             return True
 
         return False
@@ -173,22 +189,28 @@ def run_cluster_pipeline(
 
     all_para_data: list[dict] = []
 
-    # 3. Process each region (Line Detection -> Paragraph Detection)
     for region in region_idx_groups:
         if not region:
             continue
         region_bboxes = [bboxes[i] for i in region]
 
-        # 4. Text Line Detection
+        # 3. Text Line Detection
         line_idx_groups = detect_lines(region_bboxes)
 
         line_bbox_groups: list[list[tuple[float, float, float, float]]] = []
+        line_text_groups: list[str] = []
         for line_group in line_idx_groups:
             group_bboxes = [region_bboxes[bi] for bi in line_group]
             line_bbox_groups.append(group_bboxes)
+            group_text = "".join(text_boxes[region[bi]].text for bi in line_group)
+            line_text_groups.append(group_text)
 
-        # 5. Paragraph Detection
-        para_line_idx_groups = detect_paragraphs(line_bbox_groups, line_spacing_ratio=line_spacing_ratio)
+        # 4. Paragraph Detection
+        para_line_idx_groups = detect_paragraphs(
+            line_bbox_groups,
+            line_texts=line_text_groups,
+            line_spacing_ratio=line_spacing_ratio,
+        )
 
         for para_line_indices in para_line_idx_groups:
             para_lines: list[tuple[float, float, float, float]] = []
