@@ -404,6 +404,94 @@ def _para_box_widths(
     return widths
 
 
+def _split_cluster_translation(cluster_translation: str, paragraphs: list) -> list[str]:
+    text = cluster_translation.strip()
+    if not paragraphs:
+        return []
+    if not text:
+        return [""] * len(paragraphs)
+    if len(paragraphs) == 1:
+        return [text]
+
+    line_parts = [part.strip() for part in text.splitlines() if part.strip()]
+    if len(line_parts) == len(paragraphs):
+        return line_parts
+
+    weights = [max(1, len(p.text.strip())) for p in paragraphs]
+    total_weight = sum(weights) or len(paragraphs)
+    total_len = len(text)
+    segments: list[str] = []
+    start = 0
+    for i, weight in enumerate(weights):
+        if i == len(weights) - 1:
+            segments.append(text[start:].strip())
+            break
+        share = max(1, int(total_len * weight / total_weight))
+        end = min(len(text), start + share)
+        segments.append(text[start:end].strip())
+        start = end
+    while len(segments) < len(paragraphs):
+        segments.append("")
+    return segments
+
+
+def _render_translated_paragraph(
+    page: fitz.Page,
+    para,
+    text: str,
+    fontname: str,
+    dpi: int,
+    inpainted: bool = False,
+) -> None:
+    if not text.strip():
+        return
+
+    render_lines = _build_render_lines(para, dpi)
+    if not render_lines:
+        raw_x0, raw_y0, raw_x1, raw_y1 = para.bbox
+        x0 = _pdf_point(raw_x0, dpi)
+        x1 = _pdf_point(raw_x1, dpi)
+        y0_pt = _pdf_point(raw_y0, dpi)
+        ph = _pdf_point(raw_y1, dpi) - _pdf_point(raw_y0, dpi)
+        if x1 - x0 < 2 or ph < 2:
+            return
+        fontsize = max(6, int(ph * 0.25))
+        page.draw_rect((x0, y0_pt, x1, y0_pt + ph), color=(1, 1, 1), fill=(1, 1, 1), width=1)
+        page.insert_text((x0, y0_pt + fontsize), text, fontname=fontname, fontsize=fontsize)
+        return
+
+    box_widths = _para_box_widths(render_lines, dpi)
+    start_fs = max(4, _consistent_font_size_for_paragraph(render_lines, dpi) or 10)
+    min_fs = max(4, start_fs // 3)
+    best_fs = _find_best_fs(text, box_widths, start_fs, min_fs=min_fs)
+    final_lines = _wrap_text_to_boxes(text, box_widths, best_fs)
+
+    if not inpainted:
+        pad = _pdf_point(3, dpi)
+        for raw_bbox, _, _ in render_lines:
+            lx0, ly0, lx1, ly1 = raw_bbox
+            x_pt = _pdf_point(lx0, dpi)
+            x1_pt = _pdf_point(lx1, dpi)
+            y0_pt = _pdf_point(ly0, dpi)
+            y1_pt = _pdf_point(ly1, dpi)
+            if y1_pt - y0_pt >= 2 and x1_pt - x_pt >= 2:
+                page.draw_rect((x_pt - pad, y0_pt - pad, x1_pt + pad, y1_pt + pad), color=(1, 1, 1), fill=(1, 1, 1), width=1)
+
+    for idx, (raw_bbox, _, _) in enumerate(render_lines):
+        line_text = final_lines[idx] if idx < len(final_lines) else ""
+        if not line_text.strip():
+            continue
+        lx0, ly0, lx1, ly1 = raw_bbox
+        x_pt = _pdf_point(lx0, dpi)
+        y0_pt = _pdf_point(ly0, dpi)
+        y1_pt = _pdf_point(ly1, dpi)
+        line_h = y1_pt - y0_pt
+        if line_h < 2:
+            continue
+        baseline_y = y0_pt + best_fs
+        page.insert_text((x_pt, baseline_y), line_text, fontname=fontname, fontsize=best_fs)
+
+
 def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool = False, debug_only: bool = False) -> None:
     dpi = pr.source_dpi
 
@@ -461,42 +549,9 @@ def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool
         if not cluster.translation:
             continue
 
-        # Erase original text
-        page.draw_rect((x_pt, y0_pt, x1_pt, y1_pt), color=(1, 1, 1), fill=(1, 1, 1), width=1)
-
-        # Compute average original line height for baseline font size
-        all_heights = []
-        for bbox, _, _ in cluster.all_line_bboxes:
-            lh = _pdf_point(bbox[3] - bbox[1], dpi)
-            if lh > 0:
-                all_heights.append(lh)
-        avg_line_h = sum(all_heights) / len(all_heights) if all_heights else erase_h * 0.1
-        start_fs = max(4, _font_size_from_line_height(avg_line_h))
-
-        # Max lines: use original line count + 30% headroom for longer translations
-        # (NOT box_h / line_h, which includes inter-line gaps and inflates the count)
-        n_orig = len(cluster.all_line_bboxes)
-        max_lines = max(1, int(n_orig * 1.3))
-
-        # Find largest font where wrapped text fits in max_lines
-        text = cluster.translation
-        best_fs = start_fs
-        final_wrapped = [text]
-        for fs in range(start_fs, 3, -1):
-            wrapped = _wrap_text_to_boxes(text, [box_w] * max_lines, fs)
-            non_empty = [l for l in wrapped if l.strip()]
-            if len(non_empty) <= max_lines:
-                best_fs = fs
-                final_wrapped = wrapped
-                break
-
-        # Render lines vertically centered in the erase box
-        total_text_h = len(final_wrapped) * best_fs * 1.2
-        render_y = y0_pt + (erase_h - total_text_h) / 2 + best_fs
-        for line in final_wrapped:
-            if line.strip():
-                page.insert_text((x_pt, render_y), line, fontname=fontname, fontsize=best_fs)
-            render_y += best_fs * 1.2
+        para_segments = _split_cluster_translation(cluster.translation, cluster.paragraphs)
+        for para, seg_text in zip(cluster.paragraphs, para_segments):
+            _render_translated_paragraph(page, para, seg_text, fontname, dpi, inpainted=inpainted)
 
     # ================================================================
     # PASS 2: Draw white boxes and render translated text.
@@ -521,112 +576,8 @@ def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool
 
         if id(para) in clustered_ids:
             continue
-        # --- Draw white boxes to erase original text ---
-        if para.line_bboxes:
-            pad = _pdf_point(3, dpi) if not inpainted else 0
-            for raw_bbox, _, _ in para.line_bboxes:
-                lx0, ly0, lx1, ly1 = raw_bbox
-                x_pt = _pdf_point(lx0, dpi)
-                x1_pt = _pdf_point(lx1, dpi)
-                y0_pt = _pdf_point(ly0, dpi)
-                y1_pt = _pdf_point(ly1, dpi)
-                if y1_pt - y0_pt < 2:
-                    continue
-                if not inpainted:
-                    page.draw_rect((x_pt - pad, y0_pt - pad, x1_pt + pad, y1_pt + pad), color=(1, 1, 1), fill=(1, 1, 1), width=1)
-        elif not inpainted:
-            raw_x0, raw_y0, raw_x1, raw_y1 = para.bbox
-            x0 = _pdf_point(raw_x0, dpi)
-            x1 = _pdf_point(raw_x1, dpi)
-            y0_pt = _pdf_point(raw_y0, dpi)
-            ph = _pdf_point(raw_y1, dpi) - _pdf_point(raw_y0, dpi)
-            if x1 - x0 >= 2 and ph >= 2:
-                page.draw_rect((x0, y0_pt, x1, y0_pt + ph), color=(1, 1, 1), fill=(1, 1, 1), width=1)
-
-        # --- Build render_lines ---
-        render_lines = _build_render_lines(para, dpi)
-
-        if not render_lines:
-            # Fallback for paragraphs with only para.translation (no line_bboxes)
-            if para.translation:
-                text = para.translation
-                raw_x0, raw_y0, raw_x1, raw_y1 = para.bbox
-                x0 = _pdf_point(raw_x0, dpi)
-                x1 = _pdf_point(raw_x1, dpi)
-                pw = x1 - x0
-                ph = _pdf_point(raw_y1, dpi) - _pdf_point(raw_y0, dpi)
-                if pw < 2 or ph < 2:
-                    continue
-                fontsize = max(ph * 0.25, 6)
-                max_chars = max(1, int(pw / (fontsize * 0.5)))
-                wrapped = []
-                remaining = text
-                while remaining:
-                    if len(remaining) <= max_chars:
-                        wrapped.append(remaining)
-                        break
-                    wrapped.append(remaining[:max_chars])
-                    remaining = remaining[max_chars:]
-                y0_pt = _pdf_point(raw_y0, dpi)
-                for i, line in enumerate(wrapped):
-                    ty = y0_pt + fontsize + i * (fontsize * 1.2)
-                    if ty + fontsize > y0_pt + ph:
-                        break
-                    page.insert_text((x0, ty), line, fontname=fontname, fontsize=fontsize)
-            continue
-
-        # --- Classify body vs heading ---
-        is_body = _is_body_paragraph(render_lines, page_body_font, body_line_h, HEADING_SCALE, dpi)
-
-        box_widths = _para_box_widths(render_lines, dpi)
-        full_text = _join_translated_lines([lt for _, lt, _ in render_lines])
-
-        if is_body:
-            para_fs = max(1, unified_body_fs)
-        else:
-            para_fs = max(1, _consistent_font_size_for_paragraph(render_lines, dpi) or 10)
-        min_fs = max(4, para_fs // 3)
-        best_fs = _find_best_fs(full_text, box_widths, para_fs, min_fs=min_fs)
-
-        final_lines = _wrap_text_to_boxes(full_text, box_widths, best_fs)
-
-        for idx, (raw_bbox, _, font_sz) in enumerate(render_lines):
-            line_text = final_lines[idx] if idx < len(final_lines) else ""
-            if not line_text.strip():
-                continue
-
-            lx0, ly0, lx1, ly1 = raw_bbox
-            x_pt = _pdf_point(lx0, dpi)
-            x1_pt = _pdf_point(lx1, dpi)
-            y0_pt = _pdf_point(ly0, dpi)
-            y1_pt = _pdf_point(ly1, dpi)
-            line_h = y1_pt - y0_pt
-            box_w = x1_pt - x_pt
-            if line_h < 2 or box_w < 2:
-                continue
-
-            fs = best_fs
-
-            if font_path:
-                try:
-                    pil_font = ImageFont.truetype(font_path, int(fs))
-                    ascent, descent = pil_font.getmetrics()
-                    glyph_h = ascent + descent
-                    if glyph_h > 0 and glyph_h < line_h * 2:
-                        baseline_y = y0_pt + (line_h - glyph_h) / 2 + ascent
-                    else:
-                        baseline_y = y0_pt + fs
-                except Exception:
-                    baseline_y = y0_pt + fs
-            else:
-                baseline_y = y0_pt + fs
-
-            page.insert_text(
-                (x_pt, baseline_y),
-                line_text,
-                fontname=fontname,
-                fontsize=fs,
-            )
+        text = para.translation or _join_translated_lines(para.translated_lines)
+        _render_translated_paragraph(page, para, text, fontname, dpi, inpainted=inpainted)
 
 
 def _inpaint_and_insert(src_doc: fitz.Document, out_doc: fitz.Document, pr: PageResult) -> fitz.Page:

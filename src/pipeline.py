@@ -55,6 +55,8 @@ def _para_page(para) -> int:
 
 
 def _save_debug_json(pages: list[PageResult], out_path: str = "debug_ocr_translate.json") -> None:
+    if "localworking/" not in out_path:
+        out_path = f"localworking/{out_path}"
     data = []
     for pr in pages:
         page_data = {
