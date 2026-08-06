@@ -5,10 +5,10 @@ from pathlib import Path
 
 import fitz
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageFont
 
 from .inpaint import inpaint_page
-from .models import PageResult
+from .models import PageResult, TextCluster
 
 CJK_FONTNAME = "CJK"
 
@@ -73,156 +73,7 @@ def _font_size_from_line_height(line_h: float) -> int:
     return best
 
 
-def _text_fits_width(text: str, box_w: float, fs: int) -> bool:
-    if not text.strip():
-        return True
-    font_path = _find_cjk_font()
-    if not font_path:
-        w = 0.0
-        for c in text:
-            if '\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u30ff' or '\u3040' <= c <= '\u309f':
-                w += fs
-            else:
-                w += fs * 0.5
-        return w <= box_w * 0.95
-    try:
-        font = ImageFont.truetype(font_path, fs)
-        bbox = font.getbbox(text)
-        tw = bbox[2] - bbox[0]
-        return tw <= box_w * 0.95
-    except Exception:
-        return True
 
-
-def _all_lines_fit(full_text: str, box_widths: list[float], fs: int) -> bool:
-    wrapped = _wrap_text_to_boxes(full_text, box_widths, fs)
-    for i, line in enumerate(wrapped):
-        if not line.strip():
-            continue
-        bw = box_widths[i] if i < len(box_widths) else box_widths[-1]
-        if not _text_fits_width(line, bw, fs):
-            return False
-    return True
-
-
-def _find_best_fs(full_text: str, box_widths: list[float], start_fs: int, min_fs: int = 4) -> int:
-    for fs in range(start_fs, min_fs - 1, -1):
-        if _all_lines_fit(full_text, box_widths, fs):
-            return fs
-    return min_fs
-
-
-def _wrap_text_to_boxes(full_text: str, box_widths: list[float], fs: int) -> list[str]:
-    font_path = _find_cjk_font()
-    font = None
-    if font_path:
-        try:
-            font = ImageFont.truetype(font_path, fs)
-        except Exception:
-            pass
-
-    def get_width(text: str) -> float:
-        if not text:
-            return 0.0
-        if font:
-            try:
-                bbox = font.getbbox(text)
-                return bbox[2] - bbox[0]
-            except Exception:
-                pass
-        w = 0.0
-        for c in text:
-            if '\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u30ff' or '\u3040' <= c <= '\u309f':
-                w += fs
-            else:
-                w += fs * 0.5
-        return w
-
-    lines = []
-    remaining = full_text.strip()
-    
-    for bw in box_widths:
-        if not remaining:
-            lines.append("")
-            continue
-        
-        limit = bw * 0.95
-        idx = 0
-        
-        while idx < len(remaining):
-            test_str = remaining[:idx + 1]
-            tw = get_width(test_str)
-            if tw <= limit:
-                idx += 1
-            else:
-                break
-        
-        if 0 < idx < len(remaining):
-            if remaining[idx-1].isalnum() and remaining[idx].isalnum():
-                space_idx = idx - 1
-                while space_idx > 0 and remaining[space_idx].isalnum():
-                    space_idx -= 1
-                if space_idx > 0 and not remaining[space_idx].isalnum():
-                    idx = space_idx + 1
-        
-        if idx == 0:
-            idx = 1
-            
-        lines.append(remaining[:idx].strip())
-        remaining = remaining[idx:].strip()
-        
-    if remaining and lines:
-        lines[-1] = (lines[-1] + " " + remaining).strip()
-        
-    return lines
-
-
-def _join_translated_lines(lines: list[str]) -> str:
-    non_empty = [l for l in lines if l.strip()]
-    if not non_empty:
-        return ""
-    full = " ".join(non_empty)
-    if any('\u4e00' <= c <= '\u9fff' or '\u3040' <= c <= '\u309f' or '\u30a0' <= c <= '\u30ff' for c in full):
-        return "".join(non_empty).strip()
-    return full.strip()
-
-
-
-def _max_font_size_for_width(text: str, box_w: float, start_fs: int) -> int:
-    """Return the largest font size (<= *start_fs*) where *text* fits in *box_w*.
-
-    Uses the PIL glyph renderer for accurate per-font metrics.
-    Returns *start_fs* unchanged if *text* is empty or the font is unavailable.
-    """
-    if not text.strip() or box_w < 2 or start_fs <= 1:
-        return start_fs
-    font_path = _find_cjk_font()
-    if not font_path:
-        return start_fs
-    # Quick check: does it already fit?
-    try:
-        chk = ImageFont.truetype(font_path, start_fs)
-        tw = chk.getbbox(text)[2] - chk.getbbox(text)[0]
-        if tw <= box_w * 0.95:
-            return start_fs
-    except Exception:
-        return start_fs
-    # Binary search downward from start_fs.
-    low, high = 1, start_fs - 1
-    best = 1
-    while low <= high:
-        mid = (low + high) // 2
-        try:
-            font = ImageFont.truetype(font_path, mid)
-            tw = font.getbbox(text)[2] - font.getbbox(text)[0]
-        except Exception:
-            break
-        if tw <= box_w * 0.95:
-            best = mid
-            low = mid + 1
-        else:
-            high = mid - 1
-    return best
 
 
 def _optimal_font_size(text: str, box_w: float, box_h: float) -> int:
@@ -257,86 +108,7 @@ def _optimal_font_size(text: str, box_w: float, box_h: float) -> int:
     return best
 
 
-def _consistent_font_size_for_paragraph(
-    render_lines: list[tuple[tuple[float, float, float, float], str, float]],
-    dpi: int,
-) -> int:
-    """Return a consistent font size for all lines in a paragraph.
 
-    Font size is derived from the *line height* of each line (the correct
-    physical constraint), not from fitting the translated text string width
-    into the box.  We take the median height-based size so that one
-    unusually short or tall line does not skew the whole paragraph.
-    """
-    sizes: list[int] = []
-    for raw_bbox, line_text, _ in render_lines:
-        if not line_text.strip():
-            continue
-        lx0, ly0, lx1, ly1 = raw_bbox
-        y0_pt = _pdf_point(ly0, dpi)
-        y1_pt = _pdf_point(ly1, dpi)
-        line_h = y1_pt - y0_pt
-        if line_h < 2:
-            continue
-        fs = _font_size_from_line_height(line_h)
-        if fs > 0:
-            sizes.append(fs)
-    if not sizes:
-        return 0
-    sizes.sort()
-    # Use the median so outlier lines (very short/tall) don't dominate.
-    return sizes[len(sizes) // 2]
-
-
-def _compute_page_body_metrics(
-    paragraphs: list,
-    dpi: int,
-) -> tuple[int, float]:
-    """Compute the page-wide body font size and reference body line height.
-
-    Scans all multi-line paragraphs (>= 2 rendered lines) to determine:
-    - ``body_font``: median height-based font size across all body paragraph lines.
-    - ``body_line_h``: 75th-percentile line height (PDF points) of body lines.
-
-    The body_line_h is used downstream to decide whether a *single-line*
-    paragraph is an orphaned body sentence (same line height as body) or a
-    genuine heading (significantly taller line).
-
-    Returns (body_font, body_line_h).  Both are 0 when no multi-line
-    paragraphs with translations exist.
-    """
-    all_line_heights: list[float] = []
-
-    for para in paragraphs:
-        if not para.translated_lines or not para.line_bboxes:
-            continue
-        render_lines = [
-            (bbox, tline, fs)
-            for (bbox, _, fs), tline in zip(para.line_bboxes, para.translated_lines)
-            if tline.strip()
-        ]
-        if len(render_lines) < 2:
-            continue
-        for bbox, _, _ in render_lines:
-            lx0, ly0, lx1, ly1 = bbox
-            lh = _pdf_point(ly1 - ly0, dpi)
-            if lh > 0:
-                all_line_heights.append(lh)
-
-    if not all_line_heights:
-        return 0, 0.0
-
-    all_line_heights.sort()
-    idx75 = int(len(all_line_heights) * 0.75)
-    body_line_h = all_line_heights[min(idx75, len(all_line_heights) - 1)]
-
-    # Derive body_font from the median body line height so that font size
-    # matches the physical line slots on the page.
-    idx50 = len(all_line_heights) // 2
-    median_line_h = all_line_heights[idx50]
-    body_font = _font_size_from_line_height(median_line_h)
-
-    return body_font, body_line_h
 
 
 def _get_cjk_font() -> tuple[str, bytes]:
@@ -357,82 +129,146 @@ def _pdf_point(coord: float, dpi: int) -> float:
     return coord * 72.0 / dpi
 
 
-def _build_render_lines(
-    para, dpi: int,
-) -> list[tuple[tuple[float, float, float, float], str, float]]:
-    """Build the list of (bbox, translated_text, font_size) for a paragraph."""
-    render_lines: list[tuple[tuple[float, float, float, float], str, float]] = []
-    if para.translated_lines and para.line_bboxes:
-        for (bbox_orig, _, font_sz), tline in zip(para.line_bboxes, para.translated_lines):
-            render_lines.append((bbox_orig, tline, font_sz))
-    return render_lines
+def _compute_usable_rect(bbox: tuple[float, float, float, float], dpi: int, padding_pt: float = 3) -> tuple[float, float, float, float]:
+    left = _pdf_point(bbox[0], dpi) + padding_pt
+    top = _pdf_point(bbox[1], dpi) + padding_pt
+    right = _pdf_point(bbox[2], dpi) - padding_pt
+    bottom = _pdf_point(bbox[3], dpi) - padding_pt
+    return (left, top, right, bottom)
 
 
-def _is_body_paragraph(
-    render_lines: list[tuple[tuple[float, float, float, float], str, float]],
-    page_body_font: int,
-    body_line_h: float,
-    heading_scale: float,
+def _estimate_median_font_size(
+    line_bboxes: list[tuple[tuple[float, float, float, float], str, float]],
     dpi: int,
-) -> bool:
-    """Return True if the paragraph should be treated as body text."""
-    if page_body_font <= 0 or body_line_h <= 0:
-        return False
-    para_heights: list[float] = []
-    for bbox, _, _ in render_lines:
-        lx0, ly0, lx1, ly1 = bbox
-        lh = _pdf_point(ly1 - ly0, dpi)
-        if lh > 0:
-            para_heights.append(lh)
-    if para_heights:
-        avg_h = sum(para_heights) / len(para_heights)
-        if avg_h > body_line_h * heading_scale:
-            return False
-    return True
+) -> int:
+    sizes = []
+    for bbox, _, _ in line_bboxes:
+        _, ly0, _, ly1 = bbox
+        line_h_pt = _pdf_point(ly1 - ly0, dpi)
+        if line_h_pt < 2:
+            continue
+        fs = _font_size_from_line_height(line_h_pt)
+        if fs > 0:
+            sizes.append(fs)
+    if not sizes:
+        return 10
+    sizes.sort()
+    return sizes[len(sizes) // 2]
 
 
-def _para_box_widths(
-    render_lines: list[tuple[tuple[float, float, float, float], str, float]],
+def _wrap_text_to_width(text: str, width_pt: float, fs: int) -> list[str]:
+    if not text.strip() or width_pt < 2:
+        return [text] if text.strip() else []
+
+    font_path = _find_cjk_font()
+    font = None
+    if font_path:
+        try:
+            font = ImageFont.truetype(font_path, fs)
+        except Exception:
+            pass
+
+    def measure(t: str) -> float:
+        if not t:
+            return 0.0
+        if font:
+            try:
+                bbox = font.getbbox(t)
+                return bbox[2] - bbox[0]
+            except Exception:
+                pass
+        w = 0.0
+        for c in t:
+            if '\u4e00' <= c <= '\u9fff' or '\u3000' <= c <= '\u30ff' or '\u3040' <= c <= '\u309f':
+                w += fs
+            else:
+                w += fs * 0.5
+        return w
+
+    lines = []
+    remaining = text.strip()
+    limit = width_pt * 0.95
+
+    while remaining:
+        idx = 0
+        while idx < len(remaining):
+            if measure(remaining[:idx + 1]) <= limit:
+                idx += 1
+            else:
+                break
+        if idx == 0:
+            idx = 1
+        lines.append(remaining[:idx].strip())
+        remaining = remaining[idx:].strip()
+
+    return lines
+
+
+def _fit_text_to_rect(
+    text: str,
+    usable_rect: tuple[float, float, float, float],
+    initial_fs: int,
+    line_spacing: float = 1.25,
+    min_fs: int = 4,
+) -> tuple[int, list[str]]:
+    left, top, right, bottom = usable_rect
+    width_pt = right - left
+    height_pt = bottom - top
+    if width_pt < 2 or height_pt < 2:
+        return initial_fs, [text] if text.strip() else []
+
+    fs = initial_fs
+    while fs >= min_fs:
+        lines = _wrap_text_to_width(text, width_pt, fs)
+        if not lines:
+            return fs, [text] if text.strip() else []
+        total_height = len(lines) * fs * line_spacing
+        if total_height <= height_pt:
+            return fs, lines
+        fs -= 1
+
+    fs = min_fs
+    lines = _wrap_text_to_width(text, width_pt, fs)
+    return fs, lines
+
+
+def _render_cluster_text(
+    page: fitz.Page,
+    cluster: TextCluster,
+    fontname: str,
     dpi: int,
-) -> list[float]:
-    """Return the PDF-point widths of each line box."""
-    widths: list[float] = []
-    for raw_bbox, _, _ in render_lines:
-        lx0, _, lx1, _ = raw_bbox
-        bw = _pdf_point(lx1 - lx0, dpi)
-        widths.append(max(2.0, bw))
-    return widths
+    inpainted: bool = False,
+) -> None:
+    if not cluster.translation or not cluster.translation.strip():
+        return
 
+    text = cluster.translation.strip()
+    usable_rect = _compute_usable_rect(cluster.bbox, dpi)
+    left, top, right, bottom = usable_rect
+    if right - left < 4 or bottom - top < 4:
+        return
 
-def _split_cluster_translation(cluster_translation: str, paragraphs: list) -> list[str]:
-    text = cluster_translation.strip()
-    if not paragraphs:
-        return []
-    if not text:
-        return [""] * len(paragraphs)
-    if len(paragraphs) == 1:
-        return [text]
+    initial_fs = _estimate_median_font_size(cluster.all_line_bboxes, dpi)
+    line_spacing = 1.25
+    best_fs, lines = _fit_text_to_rect(text, usable_rect, initial_fs, line_spacing)
+    if not lines:
+        return
 
-    line_parts = [part.strip() for part in text.splitlines() if part.strip()]
-    if len(line_parts) == len(paragraphs):
-        return line_parts
+    if not inpainted:
+        pad = _pdf_point(3, dpi)
+        page.draw_rect(
+            (left - pad, top - pad, right + pad, bottom + pad),
+            color=(1, 1, 1), fill=(1, 1, 1), width=1
+        )
 
-    weights = [max(1, len(p.text.strip())) for p in paragraphs]
-    total_weight = sum(weights) or len(paragraphs)
-    total_len = len(text)
-    segments: list[str] = []
-    start = 0
-    for i, weight in enumerate(weights):
-        if i == len(weights) - 1:
-            segments.append(text[start:].strip())
-            break
-        share = max(1, int(total_len * weight / total_weight))
-        end = min(len(text), start + share)
-        segments.append(text[start:end].strip())
-        start = end
-    while len(segments) < len(paragraphs):
-        segments.append("")
-    return segments
+    line_height = best_fs * line_spacing
+    y_cursor = top + best_fs
+    for line in lines:
+        if not line.strip():
+            y_cursor += line_height
+            continue
+        page.insert_text((left, y_cursor), line, fontname=fontname, fontsize=best_fs)
+        y_cursor += line_height
 
 
 def _render_translated_paragraph(
@@ -446,82 +282,52 @@ def _render_translated_paragraph(
     if not text.strip():
         return
 
-    render_lines = _build_render_lines(para, dpi)
-    if not render_lines:
-        raw_x0, raw_y0, raw_x1, raw_y1 = para.bbox
-        x0 = _pdf_point(raw_x0, dpi)
-        x1 = _pdf_point(raw_x1, dpi)
-        y0_pt = _pdf_point(raw_y0, dpi)
-        ph = _pdf_point(raw_y1, dpi) - _pdf_point(raw_y0, dpi)
-        if x1 - x0 < 2 or ph < 2:
-            return
-        fontsize = max(6, int(ph * 0.25))
-        page.draw_rect((x0, y0_pt, x1, y0_pt + ph), color=(1, 1, 1), fill=(1, 1, 1), width=1)
-        page.insert_text((x0, y0_pt + fontsize), text, fontname=fontname, fontsize=fontsize)
+    usable_rect = _compute_usable_rect(para.bbox, dpi)
+    left, top, right, bottom = usable_rect
+    if right - left < 4 or bottom - top < 4:
         return
 
-    box_widths = _para_box_widths(render_lines, dpi)
-    start_fs = max(4, _consistent_font_size_for_paragraph(render_lines, dpi) or 10)
-    min_fs = max(4, start_fs // 3)
-    best_fs = _find_best_fs(text, box_widths, start_fs, min_fs=min_fs)
-    final_lines = _wrap_text_to_boxes(text, box_widths, best_fs)
+    sizes = []
+    for bbox, _, _ in para.line_bboxes:
+        _, ly0, _, ly1 = bbox
+        line_h_pt = _pdf_point(ly1 - ly0, dpi)
+        if line_h_pt < 2:
+            continue
+        fs = _font_size_from_line_height(line_h_pt)
+        if fs > 0:
+            sizes.append(fs)
+    initial_fs = 10
+    if sizes:
+        sizes.sort()
+        initial_fs = sizes[len(sizes) // 2]
+
+    line_spacing = 1.25
+    best_fs, lines = _fit_text_to_rect(text, usable_rect, initial_fs, line_spacing)
+    if not lines:
+        return
 
     if not inpainted:
         pad = _pdf_point(3, dpi)
-        for raw_bbox, _, _ in render_lines:
-            lx0, ly0, lx1, ly1 = raw_bbox
-            x_pt = _pdf_point(lx0, dpi)
-            x1_pt = _pdf_point(lx1, dpi)
-            y0_pt = _pdf_point(ly0, dpi)
-            y1_pt = _pdf_point(ly1, dpi)
-            if y1_pt - y0_pt >= 2 and x1_pt - x_pt >= 2:
-                page.draw_rect((x_pt - pad, y0_pt - pad, x1_pt + pad, y1_pt + pad), color=(1, 1, 1), fill=(1, 1, 1), width=1)
+        page.draw_rect(
+            (left - pad, top - pad, right + pad, bottom + pad),
+            color=(1, 1, 1), fill=(1, 1, 1), width=1
+        )
 
-    for idx, (raw_bbox, _, _) in enumerate(render_lines):
-        line_text = final_lines[idx] if idx < len(final_lines) else ""
-        if not line_text.strip():
+    line_height = best_fs * line_spacing
+    y_cursor = top + best_fs
+    for line in lines:
+        if not line.strip():
+            y_cursor += line_height
             continue
-        lx0, ly0, lx1, ly1 = raw_bbox
-        x_pt = _pdf_point(lx0, dpi)
-        y0_pt = _pdf_point(ly0, dpi)
-        y1_pt = _pdf_point(ly1, dpi)
-        line_h = y1_pt - y0_pt
-        if line_h < 2:
-            continue
-        baseline_y = y0_pt + best_fs
-        page.insert_text((x_pt, baseline_y), line_text, fontname=fontname, fontsize=best_fs)
+        page.insert_text((left, y_cursor), line, fontname=fontname, fontsize=best_fs)
+        y_cursor += line_height
 
 
 def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool = False, debug_only: bool = False) -> None:
     dpi = pr.source_dpi
 
-    page_body_font, body_line_h = _compute_page_body_metrics(pr.paragraphs, dpi)
-    HEADING_SCALE = 1.8
-
     # ================================================================
-    # PASS 1: Find the unified body font size across ALL body paragraphs.
-    #         This is the largest font where every body paragraph's text
-    #         fits when wrapped across its line boxes.
-    # ================================================================
-    body_para_data: list[tuple[str, list[float]]] = []  # (full_text, box_widths)
-    for para in pr.paragraphs:
-        rl = _build_render_lines(para, dpi)
-        if not rl:
-            continue
-        if not _is_body_paragraph(rl, page_body_font, body_line_h, HEADING_SCALE, dpi):
-            continue
-        bw = _para_box_widths(rl, dpi)
-        ft = _join_translated_lines([lt for _, lt, _ in rl])
-        if ft.strip():
-            body_para_data.append((ft, bw))
-
-    if page_body_font > 0:
-        unified_body_fs = page_body_font
-    else:
-        unified_body_fs = 10
-
-    # ================================================================
-    # PASS 0: Render clusters (unified blue boxes).
+    # PASS 0: Render clusters (unified blue boxes) as whole paragraphs.
     # ================================================================
     clustered_ids = set()
     for c in pr.clusters:
@@ -540,7 +346,6 @@ def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool
         if box_w < 4 or erase_h < 4:
             continue
 
-        # Draw blue debug border (always, to show cluster boundary)
         page.draw_rect((x_pt, y0_pt, x1_pt, y1_pt), color=(0, 0, 1), width=2.0)
 
         if debug_only:
@@ -549,17 +354,12 @@ def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool
         if not cluster.translation:
             continue
 
-        para_segments = _split_cluster_translation(cluster.translation, cluster.paragraphs)
-        for para, seg_text in zip(cluster.paragraphs, para_segments):
-            _render_translated_paragraph(page, para, seg_text, fontname, dpi, inpainted=inpainted)
+        _render_cluster_text(page, cluster, fontname, dpi, inpainted=inpainted)
 
     # ================================================================
-    # PASS 2: Draw white boxes and render translated text.
+    # PASS 1: Render unclustered paragraphs within their own bbox.
     # ================================================================
-    font_path = _find_cjk_font()
-
     for para in pr.paragraphs:
-        # --- Debug: draw red box boundaries (ALL paragraphs, clustered or not) ---
         if DEBUG_DRAW_BOXES and para.line_bboxes:
             for raw_bbox, _, _ in para.line_bboxes:
                 lx0, ly0, lx1, ly1 = raw_bbox
@@ -576,7 +376,9 @@ def _render_page(page: fitz.Page, pr: PageResult, fontname: str, inpainted: bool
 
         if id(para) in clustered_ids:
             continue
-        text = para.translation or _join_translated_lines(para.translated_lines)
+        text = para.translation or ""
+        if not text.strip():
+            continue
         _render_translated_paragraph(page, para, text, fontname, dpi, inpainted=inpainted)
 
 

@@ -30,7 +30,7 @@ CRITICAL RULES:
 - Output ONLY valid JSON. No explanations.
 """
 
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 1800
 
 
 class _BaseTranslator:

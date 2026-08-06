@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import glob
 import json
+import os
 import time
 import warnings
 
@@ -23,6 +25,29 @@ from .translator import _is_identity_failure
 from .translator import create_translator
 
 
+
+
+def cleanup_artifacts() -> None:
+    """Remove OCR DB, translation cache, and debug JSON files before a run.
+
+    Ensures every pipeline run starts from a clean state so data from a
+    previous document (same page numbers) cannot leak into the new output.
+    """
+    patterns = [
+        db.OCR_DB_PATH,
+        "translation_cache.db",
+        "localworking/debug_batch_*.json",
+    ]
+    removed = 0
+    for pattern in patterns:
+        for p in glob.glob(pattern):
+            try:
+                os.remove(p)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        print(f"  [CLEANUP] Removed {removed} cache/DB/debug artifact(s)")
 
 
 def _get_cluster_algorithm(config: Config) -> BaseClusterAlgorithm:
@@ -539,6 +564,7 @@ def run_full_pipeline_with_output(
     config: Config,
     progress: bool = True,
 ) -> str:
+    cleanup_artifacts()
     if config.ocr_only:
         total_start = config.page_start or 1
         total_end = config.page_end or 9999
